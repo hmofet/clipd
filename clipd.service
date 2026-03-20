@@ -1,0 +1,14 @@
+[Unit]
+Description=clipd - Network Clipboard
+After=network.target
+
+[Service]
+Type=simple
+User=arin
+WorkingDirectory=/opt/clipd
+ExecStart=/opt/clipd/clipd -port 8181 -db /opt/clipd/data/clipd.db
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
