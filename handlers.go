@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -30,13 +31,22 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/tabs/{id}", s.handleDeleteTab)
 }
 
+// parseID extracts and validates the {id} path value as a positive integer.
+func parseID(r *http.Request) (int, error) {
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("invalid id")
+	}
+	return id, nil
+}
+
 func (s *Server) handleListTabs(w http.ResponseWriter, r *http.Request) {
 	tabs, err := s.store.ListTabs()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Return empty array instead of null when there are no tabs
+	// Return empty array instead of null when there are no tabs.
 	if tabs == nil {
 		tabs = []Tab{}
 	}
@@ -44,7 +54,11 @@ func (s *Server) handleListTabs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetTab(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id, err := parseID(r)
+	if err != nil {
+		http.Error(w, "invalid tab id", http.StatusBadRequest)
+		return
+	}
 	tab, err := s.store.GetTab(id)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
@@ -62,13 +76,12 @@ func (s *Server) handleCreateTab(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		// Default name if no body or bad JSON
 		req.Name = ""
 	}
 	if req.Name == "" {
-		// The store will assign a default-looking name; we generate one here
+		// Generate a default name based on current tab count.
 		tabs, _ := s.store.ListTabs()
-		req.Name = "Tab " + strings.TrimSpace(itoa(len(tabs)+1))
+		req.Name = fmt.Sprintf("Tab %d", len(tabs)+1)
 	}
 
 	tab, err := s.store.CreateTab(req.Name)
@@ -80,7 +93,11 @@ func (s *Server) handleCreateTab(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateTab(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id, err := parseID(r)
+	if err != nil {
+		http.Error(w, "invalid tab id", http.StatusBadRequest)
+		return
+	}
 
 	var req struct {
 		Name    string `json:"name"`
@@ -104,7 +121,11 @@ func (s *Server) handleUpdateTab(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteTab(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id, err := parseID(r)
+	if err != nil {
+		http.Error(w, "invalid tab id", http.StatusBadRequest)
+		return
+	}
 	if err := s.store.DeleteTab(id); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			http.Error(w, "tab not found", http.StatusNotFound)
@@ -118,7 +139,7 @@ func (s *Server) handleDeleteTab(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleReorderTabs(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		IDs []string `json:"ids"`
+		IDs []int `json:"ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
@@ -135,16 +156,11 @@ func (s *Server) handleReorderTabs(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// writeJSON is a helper that sets Content-Type and writes JSON to the response.
+// writeJSON sets Content-Type and encodes data as JSON.
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(data); err != nil {
 		log.Printf("error encoding JSON response: %v", err)
 	}
-}
-
-// itoa converts an int to its string representation.
-func itoa(n int) string {
-	return fmt.Sprintf("%d", n)
 }

@@ -1,248 +1,160 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"sort"
-	"strconv"
 	"time"
 
-	bolt "go.etcd.io/bbolt"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Store wraps a BoltDB database and provides CRUD operations for tabs.
+// Store wraps a PostgreSQL connection pool and provides CRUD operations for tabs.
 type Store struct {
-	db *bolt.DB
+	pool *pgxpool.Pool
 }
 
-// Bucket names used in BoltDB
-var (
-	tabsBucket = []byte("tabs")
-	metaBucket = []byte("meta")
-)
+// createTableSQL bootstraps the schema on first run.
+const createTableSQL = `
+CREATE TABLE IF NOT EXISTS tabs (
+    id          SERIAL PRIMARY KEY,
+    name        TEXT NOT NULL DEFAULT 'New Tab',
+    content     TEXT NOT NULL DEFAULT '',
+    tab_order   INTEGER NOT NULL DEFAULT 0,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);`
 
-// NewStore opens the BoltDB file and creates buckets if they don't exist.
-func NewStore(path string) (*Store, error) {
-	db, err := bolt.Open(path, 0600, nil)
+// NewStore opens a pgxpool connection and ensures the schema exists.
+func NewStore(databaseURL string) (*Store, error) {
+	pool, err := pgxpool.New(context.Background(), databaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("opening database: %w", err)
+		return nil, fmt.Errorf("connecting to database: %w", err)
 	}
 
-	// Create buckets on first run — this is a common BoltDB pattern
-	err = db.Update(func(tx *bolt.Tx) error {
-		if _, err := tx.CreateBucketIfNotExists(tabsBucket); err != nil {
-			return err
-		}
-		b, err := tx.CreateBucketIfNotExists(metaBucket)
-		if err != nil {
-			return err
-		}
-		// Initialize next_id if it doesn't exist
-		if b.Get([]byte("next_id")) == nil {
-			return b.Put([]byte("next_id"), []byte("1"))
-		}
-		return nil
-	})
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("initializing buckets: %w", err)
+	// Verify the connection is alive.
+	if err := pool.Ping(context.Background()); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("pinging database: %w", err)
 	}
 
-	return &Store{db: db}, nil
+	// Create table on startup — no migration tool needed for this scope.
+	if _, err := pool.Exec(context.Background(), createTableSQL); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("creating table: %w", err)
+	}
+
+	return &Store{pool: pool}, nil
 }
 
-// Close closes the underlying BoltDB database.
-func (s *Store) Close() error {
-	return s.db.Close()
+// Close shuts down the connection pool.
+func (s *Store) Close() {
+	s.pool.Close()
 }
 
-// nextID reads and increments the auto-increment counter in the meta bucket.
-func (s *Store) nextID(tx *bolt.Tx) (string, error) {
-	b := tx.Bucket(metaBucket)
-	val := b.Get([]byte("next_id"))
-	id, err := strconv.Atoi(string(val))
-	if err != nil {
-		return "", fmt.Errorf("parsing next_id: %w", err)
-	}
-	next := strconv.Itoa(id + 1)
-	if err := b.Put([]byte("next_id"), []byte(next)); err != nil {
-		return "", err
-	}
-	return strconv.Itoa(id), nil
-}
-
-// ListTabs returns all tabs sorted by their order field.
+// ListTabs returns all tabs sorted by tab_order then id.
 func (s *Store) ListTabs() ([]Tab, error) {
-	var tabs []Tab
-
-	err := s.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(tabsBucket)
-		return b.ForEach(func(k, v []byte) error {
-			var tab Tab
-			if err := json.Unmarshal(v, &tab); err != nil {
-				return err
-			}
-			tabs = append(tabs, tab)
-			return nil
-		})
-	})
+	rows, err := s.pool.Query(context.Background(),
+		`SELECT id, name, content, tab_order, created_at, updated_at
+		 FROM tabs
+		 ORDER BY tab_order ASC, id ASC`)
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 
-	sort.Slice(tabs, func(i, j int) bool {
-		return tabs[i].Order < tabs[j].Order
-	})
-
-	return tabs, nil
+	var tabs []Tab
+	for rows.Next() {
+		var t Tab
+		if err := rows.Scan(&t.ID, &t.Name, &t.Content, &t.Order, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, err
+		}
+		tabs = append(tabs, t)
+	}
+	return tabs, rows.Err()
 }
 
 // GetTab retrieves a single tab by ID.
-func (s *Store) GetTab(id string) (*Tab, error) {
-	var tab Tab
-
-	err := s.db.View(func(tx *bolt.Tx) error {
-		b := tx.Bucket(tabsBucket)
-		v := b.Get([]byte(id))
-		if v == nil {
-			return fmt.Errorf("tab not found")
-		}
-		return json.Unmarshal(v, &tab)
-	})
+func (s *Store) GetTab(id int) (*Tab, error) {
+	var t Tab
+	err := s.pool.QueryRow(context.Background(),
+		`SELECT id, name, content, tab_order, created_at, updated_at
+		 FROM tabs WHERE id = $1`, id).
+		Scan(&t.ID, &t.Name, &t.Content, &t.Order, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, fmt.Errorf("tab not found")
+		}
 		return nil, err
 	}
-
-	return &tab, nil
+	return &t, nil
 }
 
-// CreateTab creates a new tab with the given name. It auto-assigns an ID and
-// places the tab at the end of the order.
+// CreateTab inserts a new tab at the end of the order.
 func (s *Store) CreateTab(name string) (*Tab, error) {
-	var tab Tab
-
-	err := s.db.Update(func(tx *bolt.Tx) error {
-		id, err := s.nextID(tx)
-		if err != nil {
-			return err
-		}
-
-		// Count existing tabs to determine order
-		b := tx.Bucket(tabsBucket)
-		order := 0
-		b.ForEach(func(k, v []byte) error {
-			order++
-			return nil
-		})
-
-		now := time.Now().UTC()
-		tab = Tab{
-			ID:        id,
-			Name:      name,
-			Content:   "",
-			Order:     order,
-			CreatedAt: now,
-			UpdatedAt: now,
-		}
-
-		data, err := json.Marshal(tab)
-		if err != nil {
-			return err
-		}
-		return b.Put([]byte(id), data)
-	})
+	// Place the new tab after all existing tabs.
+	var maxOrder int
+	err := s.pool.QueryRow(context.Background(),
+		`SELECT COALESCE(MAX(tab_order), -1) FROM tabs`).Scan(&maxOrder)
 	if err != nil {
 		return nil, err
 	}
 
-	return &tab, nil
+	now := time.Now().UTC()
+	var t Tab
+	err = s.pool.QueryRow(context.Background(),
+		`INSERT INTO tabs (name, content, tab_order, created_at, updated_at)
+		 VALUES ($1, '', $2, $3, $3)
+		 RETURNING id, name, content, tab_order, created_at, updated_at`,
+		name, maxOrder+1, now).
+		Scan(&t.ID, &t.Name, &t.Content, &t.Order, &t.CreatedAt, &t.UpdatedAt)
+	return &t, err
 }
 
-// UpdateTab updates an existing tab's name and/or content.
-func (s *Store) UpdateTab(id, name, content string) (*Tab, error) {
-	var tab Tab
-
-	err := s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(tabsBucket)
-		v := b.Get([]byte(id))
-		if v == nil {
-			return fmt.Errorf("tab not found")
+// UpdateTab updates a tab's name and content.
+func (s *Store) UpdateTab(id int, name, content string) (*Tab, error) {
+	now := time.Now().UTC()
+	var t Tab
+	err := s.pool.QueryRow(context.Background(),
+		`UPDATE tabs
+		 SET name = $1, content = $2, updated_at = $3
+		 WHERE id = $4
+		 RETURNING id, name, content, tab_order, created_at, updated_at`,
+		name, content, now, id).
+		Scan(&t.ID, &t.Name, &t.Content, &t.Order, &t.CreatedAt, &t.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, fmt.Errorf("tab not found")
 		}
-		if err := json.Unmarshal(v, &tab); err != nil {
-			return err
-		}
+		return nil, err
+	}
+	return &t, nil
+}
 
-		tab.Name = name
-		tab.Content = content
-		tab.UpdatedAt = time.Now().UTC()
+// DeleteTab removes a tab by ID.
+func (s *Store) DeleteTab(id int) error {
+	cmd, err := s.pool.Exec(context.Background(),
+		`DELETE FROM tabs WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	if cmd.RowsAffected() == 0 {
+		return fmt.Errorf("tab not found")
+	}
+	return nil
+}
 
-		data, err := json.Marshal(tab)
+// ReorderTabs sets tab_order for each tab based on the provided ordered list of IDs.
+func (s *Store) ReorderTabs(ids []int) error {
+	for i, id := range ids {
+		cmd, err := s.pool.Exec(context.Background(),
+			`UPDATE tabs SET tab_order = $1 WHERE id = $2`, i, id)
 		if err != nil {
 			return err
 		}
-		return b.Put([]byte(id), data)
-	})
-	if err != nil {
-		return nil, err
+		if cmd.RowsAffected() == 0 {
+			return fmt.Errorf("tab %d not found", id)
+		}
 	}
-
-	return &tab, nil
-}
-
-// DeleteTab removes a tab by ID and reorders remaining tabs.
-func (s *Store) DeleteTab(id string) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(tabsBucket)
-		if b.Get([]byte(id)) == nil {
-			return fmt.Errorf("tab not found")
-		}
-		if err := b.Delete([]byte(id)); err != nil {
-			return err
-		}
-
-		// Reorder remaining tabs to close any gaps
-		var tabs []Tab
-		b.ForEach(func(k, v []byte) error {
-			var t Tab
-			json.Unmarshal(v, &t)
-			tabs = append(tabs, t)
-			return nil
-		})
-		sort.Slice(tabs, func(i, j int) bool {
-			return tabs[i].Order < tabs[j].Order
-		})
-		for i, t := range tabs {
-			t.Order = i
-			data, _ := json.Marshal(t)
-			b.Put([]byte(t.ID), data)
-		}
-
-		return nil
-	})
-}
-
-// ReorderTabs sets the order of tabs based on the provided list of IDs.
-func (s *Store) ReorderTabs(ids []string) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		b := tx.Bucket(tabsBucket)
-		for i, id := range ids {
-			v := b.Get([]byte(id))
-			if v == nil {
-				return fmt.Errorf("tab %s not found", id)
-			}
-			var tab Tab
-			if err := json.Unmarshal(v, &tab); err != nil {
-				return err
-			}
-			tab.Order = i
-			data, err := json.Marshal(tab)
-			if err != nil {
-				return err
-			}
-			if err := b.Put([]byte(id), data); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	return nil
 }

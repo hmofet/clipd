@@ -1,28 +1,34 @@
 package main
 
 import (
-	"flag"
 	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
 )
 
 func main() {
-	// Parse command-line flags — the flag package is Go's standard way
-	// to handle CLI arguments.
-	port := flag.Int("port", 8181, "port to listen on")
-	dbPath := flag.String("db", "clipd.db", "path to BoltDB database file")
-	flag.Parse()
+	// Read configuration from environment variables.
+	// Railway sets PORT and DATABASE_URL automatically.
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
 
-	// Open the BoltDB store
-	store, err := NewStore(*dbPath)
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		log.Fatal("DATABASE_URL environment variable is required")
+	}
+
+	// Open the PostgreSQL connection pool and initialize the schema.
+	store, err := NewStore(databaseURL)
 	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer store.Close()
 
-	// Create server and register API routes
+	// Create server and register API routes.
 	server := NewServer(store)
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
@@ -36,7 +42,7 @@ func main() {
 	}
 	mux.Handle("GET /", http.FileServer(http.FS(htmlFS)))
 
-	addr := fmt.Sprintf(":%d", *port)
+	addr := fmt.Sprintf(":%s", port)
 	log.Printf("clipd starting on http://0.0.0.0%s", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatalf("Server failed: %v", err)
