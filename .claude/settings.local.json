@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go mod:*)",
+      "Bash(cmd.exe /c \"cd /d \"\"C:\\\\Users\\\\Arin Bakht\\\\Documents\\\\GitHub\\\\clipd\"\" && go mod tidy\")",
+      "Bash(cmd.exe /c \"where go 2>&1\")",
+      "Bash(powershell.exe -Command \"cd ''C:\\\\Users\\\\Arin Bakht\\\\Documents\\\\GitHub\\\\clipd''; go mod tidy; Write-Host ''exit:'' $LASTEXITCODE\")"
+    ]
+  }
+}
