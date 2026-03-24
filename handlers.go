@@ -10,7 +10,6 @@ import (
 )
 
 // Server holds the store and provides HTTP handler methods.
-// In Go, grouping handlers on a struct is a clean way to share dependencies.
 type Server struct {
 	store *Store
 }
@@ -20,15 +19,21 @@ func NewServer(store *Store) *Server {
 	return &Server{store: store}
 }
 
-// RegisterRoutes sets up all API routes on the given mux.
-// Go 1.22+ supports "METHOD /path" patterns in http.ServeMux.
+// RegisterRoutes sets up all API and auth routes on the given mux.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/tabs", s.handleListTabs)
-	mux.HandleFunc("POST /api/tabs", s.handleCreateTab)
-	mux.HandleFunc("PUT /api/tabs/reorder", s.handleReorderTabs)
-	mux.HandleFunc("GET /api/tabs/{id}", s.handleGetTab)
-	mux.HandleFunc("PUT /api/tabs/{id}", s.handleUpdateTab)
-	mux.HandleFunc("DELETE /api/tabs/{id}", s.handleDeleteTab)
+	// Auth routes (no auth required for login/verify).
+	mux.HandleFunc("POST /auth/login", s.handleLogin)
+	mux.HandleFunc("GET /auth/verify", s.handleVerify)
+	mux.HandleFunc("POST /auth/logout", s.handleLogout)
+	mux.HandleFunc("GET /auth/me", requireAuth(s.store, s.handleMe))
+
+	// Tab API routes (all require auth).
+	mux.HandleFunc("GET /api/tabs", requireAuth(s.store, s.handleListTabs))
+	mux.HandleFunc("POST /api/tabs", requireAuth(s.store, s.handleCreateTab))
+	mux.HandleFunc("PUT /api/tabs/reorder", requireAuth(s.store, s.handleReorderTabs))
+	mux.HandleFunc("GET /api/tabs/{id}", requireAuth(s.store, s.handleGetTab))
+	mux.HandleFunc("PUT /api/tabs/{id}", requireAuth(s.store, s.handleUpdateTab))
+	mux.HandleFunc("DELETE /api/tabs/{id}", requireAuth(s.store, s.handleDeleteTab))
 }
 
 // parseID extracts and validates the {id} path value as a positive integer.
@@ -41,12 +46,12 @@ func parseID(r *http.Request) (int, error) {
 }
 
 func (s *Server) handleListTabs(w http.ResponseWriter, r *http.Request) {
-	tabs, err := s.store.ListTabs()
+	userID := getUserID(r)
+	tabs, err := s.store.ListTabs(userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Return empty array instead of null when there are no tabs.
 	if tabs == nil {
 		tabs = []Tab{}
 	}
@@ -54,12 +59,13 @@ func (s *Server) handleListTabs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetTab(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
 	id, err := parseID(r)
 	if err != nil {
 		http.Error(w, "invalid tab id", http.StatusBadRequest)
 		return
 	}
-	tab, err := s.store.GetTab(id)
+	tab, err := s.store.GetTab(userID, id)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			http.Error(w, "tab not found", http.StatusNotFound)
@@ -72,6 +78,7 @@ func (s *Server) handleGetTab(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateTab(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
 	var req struct {
 		Name string `json:"name"`
 	}
@@ -79,12 +86,11 @@ func (s *Server) handleCreateTab(w http.ResponseWriter, r *http.Request) {
 		req.Name = ""
 	}
 	if req.Name == "" {
-		// Generate a default name based on current tab count.
-		tabs, _ := s.store.ListTabs()
+		tabs, _ := s.store.ListTabs(userID)
 		req.Name = fmt.Sprintf("Tab %d", len(tabs)+1)
 	}
 
-	tab, err := s.store.CreateTab(req.Name)
+	tab, err := s.store.CreateTab(userID, req.Name)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -93,6 +99,7 @@ func (s *Server) handleCreateTab(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateTab(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
 	id, err := parseID(r)
 	if err != nil {
 		http.Error(w, "invalid tab id", http.StatusBadRequest)
@@ -108,7 +115,7 @@ func (s *Server) handleUpdateTab(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tab, err := s.store.UpdateTab(id, req.Name, req.Content)
+	tab, err := s.store.UpdateTab(userID, id, req.Name, req.Content)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			http.Error(w, "tab not found", http.StatusNotFound)
@@ -121,12 +128,13 @@ func (s *Server) handleUpdateTab(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteTab(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
 	id, err := parseID(r)
 	if err != nil {
 		http.Error(w, "invalid tab id", http.StatusBadRequest)
 		return
 	}
-	if err := s.store.DeleteTab(id); err != nil {
+	if err := s.store.DeleteTab(userID, id); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			http.Error(w, "tab not found", http.StatusNotFound)
 			return
@@ -138,6 +146,7 @@ func (s *Server) handleDeleteTab(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleReorderTabs(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
 	var req struct {
 		IDs []int `json:"ids"`
 	}
@@ -145,7 +154,7 @@ func (s *Server) handleReorderTabs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
-	if err := s.store.ReorderTabs(req.IDs); err != nil {
+	if err := s.store.ReorderTabs(userID, req.IDs); err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return

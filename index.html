@@ -62,6 +62,27 @@ body.dark {
   padding: 10px 0;
 }
 .header .spacer { flex: 1; }
+.header-user {
+  font-size: 13px;
+  color: var(--fg-muted);
+  margin-right: 12px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.logout-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-muted);
+  margin-right: 8px;
+  transition: border-color 0.15s, color 0.15s;
+}
+.logout-btn:hover { border-color: #c00; color: #c00; }
 .theme-btn {
   background: none;
   border: 1px solid var(--border);
@@ -73,6 +94,71 @@ body.dark {
   transition: border-color 0.15s, color 0.15s;
 }
 .theme-btn:hover { border-color: var(--accent); color: var(--fg); }
+
+/* ── Login screen ────────────────────────────────────── */
+.login-screen {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.login-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 40px;
+  width: 360px;
+  max-width: 90vw;
+  box-shadow: 0 4px 24px var(--shadow);
+  text-align: center;
+}
+.login-card h2 {
+  font-size: 20px;
+  margin-bottom: 8px;
+  color: var(--fg);
+}
+.login-card p {
+  font-size: 13px;
+  color: var(--fg-muted);
+  margin-bottom: 24px;
+}
+.login-card input[type="email"] {
+  width: 100%;
+  padding: 12px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  outline: none;
+  margin-bottom: 12px;
+  transition: border-color 0.15s;
+}
+.login-card input[type="email"]:focus { border-color: var(--border-focus); }
+.login-card button {
+  width: 100%;
+  padding: 12px;
+  font-size: 14px;
+  font-weight: 600;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.login-card button:hover { opacity: 0.9; }
+.login-card button:disabled { opacity: 0.5; cursor: not-allowed; }
+.login-msg {
+  font-size: 13px;
+  color: var(--fg-muted);
+  margin-top: 16px;
+}
+.login-msg a {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
 
 /* ── Tab bar ─────────────────────────────────────────── */
 .tab-bar {
@@ -254,26 +340,52 @@ body.dark .ctx-item.danger:hover { color: #ff8080; background: #3b1010; }
 <div class="header">
   <h1>clipd</h1>
   <span class="spacer"></span>
+  <span class="header-user" id="headerUser" style="display:none"></span>
+  <button class="logout-btn" id="logoutBtn" style="display:none" onclick="logout()">Log out</button>
   <button class="theme-btn" id="themeBtn" onclick="toggleTheme()">&#9790; Dark</button>
 </div>
 
-<!-- Tab bar -->
-<div class="tab-bar" id="tabBar">
-  <button class="tab-add" onclick="createTab()" title="New tab">+</button>
+<!-- Login screen (shown when not authenticated) -->
+<div class="login-screen" id="loginScreen" style="display:none">
+  <div class="login-card">
+    <h2>Welcome to clipd</h2>
+    <p>No password needed &mdash; we'll email you a login link</p>
+    <div id="loginForm">
+      <input type="email" id="loginEmail" placeholder="you@email.com" autocomplete="email" autofocus>
+      <button id="loginBtn" onclick="submitLogin()">Send login link</button>
+    </div>
+    <div id="loginSent" style="display:none">
+      <p class="login-msg" style="margin-top:0">
+        We sent a login link to <strong id="sentEmail"></strong><br>
+        Click the link in your email to log in.
+      </p>
+      <p class="login-msg">
+        <a onclick="showLoginForm()">Use a different email</a>
+      </p>
+    </div>
+  </div>
 </div>
 
-<!-- Toolbar (hidden when no tab is selected) -->
-<div class="toolbar" id="toolbar" style="display:none">
-  <span class="spacer"></span>
-  <label><input type="checkbox" id="mdToggle" onchange="toggleMarkdown()"> Markdown</label>
-  <span class="save-status" id="saveStatus"></span>
-</div>
+<!-- App UI (shown when authenticated) -->
+<div id="appUI" style="display:none">
+  <!-- Tab bar -->
+  <div class="tab-bar" id="tabBar">
+    <button class="tab-add" onclick="createTab()" title="New tab">+</button>
+  </div>
 
-<!-- Content area -->
-<div class="content">
-  <div class="empty-state" id="emptyState">Click [+] to create a tab</div>
-  <textarea id="editor" style="display:none" oninput="onEditorInput()"></textarea>
-  <div class="markdown-view" id="mdView" style="display:none"></div>
+  <!-- Toolbar (hidden when no tab is selected) -->
+  <div class="toolbar" id="toolbar" style="display:none">
+    <span class="spacer"></span>
+    <label><input type="checkbox" id="mdToggle" onchange="toggleMarkdown()"> Markdown</label>
+    <span class="save-status" id="saveStatus"></span>
+  </div>
+
+  <!-- Content area -->
+  <div class="content">
+    <div class="empty-state" id="emptyState">Click [+] to create a tab</div>
+    <textarea id="editor" style="display:none" oninput="onEditorInput()"></textarea>
+    <div class="markdown-view" id="mdView" style="display:none"></div>
+  </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -282,7 +394,8 @@ body.dark .ctx-item.danger:hover { color: #ff8080; background: #3b1010; }
 let tabs = [];
 let activeTabId = null;
 let saveTimer = null;
-let ctxTargetId = null; // tab targeted by the context menu
+let ctxTargetId = null;
+let currentEmail = null;
 
 const tabBar    = document.getElementById('tabBar');
 const toolbar   = document.getElementById('toolbar');
@@ -293,6 +406,10 @@ const saveStatus = document.getElementById('saveStatus');
 const emptyState = document.getElementById('emptyState');
 const ctxMenu   = document.getElementById('ctxMenu');
 const themeBtn  = document.getElementById('themeBtn');
+const loginScreen = document.getElementById('loginScreen');
+const appUI     = document.getElementById('appUI');
+const headerUser = document.getElementById('headerUser');
+const logoutBtn = document.getElementById('logoutBtn');
 
 // ── Theme ──────────────────────────────────────────────────────────────────
 function applyTheme(dark) {
@@ -306,7 +423,6 @@ function toggleTheme() {
   applyTheme(dark);
 }
 
-// Init theme: respect localStorage, then system preference.
 (function () {
   const saved = localStorage.getItem('theme');
   if (saved) {
@@ -325,6 +441,75 @@ async function api(method, path, body) {
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
+
+// ── Auth ───────────────────────────────────────────────────────────────────
+async function checkAuth() {
+  try {
+    const data = await api('GET', '/auth/me');
+    currentEmail = data.email;
+    showApp();
+  } catch (e) {
+    showLogin();
+  }
+}
+
+function showLogin() {
+  loginScreen.style.display = 'flex';
+  appUI.style.display = 'none';
+  headerUser.style.display = 'none';
+  logoutBtn.style.display = 'none';
+}
+
+function showApp() {
+  loginScreen.style.display = 'none';
+  appUI.style.display = '';
+  headerUser.style.display = '';
+  headerUser.textContent = currentEmail;
+  logoutBtn.style.display = '';
+  loadTabs();
+}
+
+function showLoginForm() {
+  document.getElementById('loginForm').style.display = '';
+  document.getElementById('loginSent').style.display = 'none';
+  document.getElementById('loginEmail').value = '';
+  document.getElementById('loginEmail').focus();
+}
+
+async function submitLogin() {
+  const emailInput = document.getElementById('loginEmail');
+  const email = emailInput.value.trim();
+  if (!email) return;
+
+  const btn = document.getElementById('loginBtn');
+  btn.disabled = true;
+  btn.textContent = 'Sending...';
+
+  try {
+    await api('POST', '/auth/login', { email });
+    document.getElementById('sentEmail').textContent = email;
+    document.getElementById('loginForm').style.display = 'none';
+    document.getElementById('loginSent').style.display = '';
+  } catch (e) {
+    alert('Something went wrong. Please try again.');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Send login link';
+  }
+}
+
+async function logout() {
+  try { await api('POST', '/auth/logout'); } catch(e) {}
+  currentEmail = null;
+  tabs = [];
+  activeTabId = null;
+  showLogin();
+}
+
+// Handle Enter key on email input.
+document.getElementById('loginEmail').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') submitLogin();
+});
 
 // ── Load tabs on startup ───────────────────────────────────────────────────
 async function loadTabs() {
@@ -392,7 +577,6 @@ async function createTab() {
 function openCtxMenu(e, tabId) {
   e.preventDefault();
   ctxTargetId = tabId;
-  // Keep menu inside viewport
   const x = Math.min(e.clientX, window.innerWidth  - 150);
   const y = Math.min(e.clientY, window.innerHeight - 80);
   ctxMenu.style.left = x + 'px';
@@ -504,7 +688,7 @@ function toggleMarkdown() {
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
-loadTabs();
+checkAuth();
 </script>
 </body>
 </html>

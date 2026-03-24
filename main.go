@@ -6,11 +6,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 )
 
 func main() {
-	// Read configuration from environment variables.
-	// Railway sets PORT and DATABASE_URL automatically.
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -21,21 +20,26 @@ func main() {
 		log.Fatal("DATABASE_URL environment variable is required")
 	}
 
-	// Open the PostgreSQL connection pool and initialize the schema.
 	store, err := NewStore(databaseURL)
 	if err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 	defer store.Close()
 
-	// Create server and register API routes.
+	// Clean up expired tokens/sessions on startup and periodically.
+	store.Cleanup()
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			store.Cleanup()
+		}
+	}()
+
 	server := NewServer(store)
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 
-	// Serve the embedded index.html at the root path.
-	// fs.Sub extracts a subtree from the embed.FS so files are served
-	// from "/" instead of "/index.html".
 	htmlFS, err := fs.Sub(staticFiles, ".")
 	if err != nil {
 		log.Fatalf("Failed to create sub filesystem: %v", err)
