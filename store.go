@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
+	"os"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -13,7 +15,8 @@ import (
 
 // Store wraps a PostgreSQL connection pool and provides CRUD operations.
 type Store struct {
-	pool *pgxpool.Pool
+	pool          *pgxpool.Pool
+	DefaultUserID int // used when AUTH_DISABLED is set
 }
 
 const migrateSQL = `
@@ -69,7 +72,20 @@ func NewStore(databaseURL string) (*Store, error) {
 		return nil, fmt.Errorf("running migrations: %w", err)
 	}
 
-	return &Store{pool: pool}, nil
+	s := &Store{pool: pool}
+
+	// When auth is disabled, ensure a default user exists.
+	if os.Getenv("AUTH_DISABLED") != "" {
+		id, err := s.UpsertUser("default@clipd.local")
+		if err != nil {
+			pool.Close()
+			return nil, fmt.Errorf("creating default user: %w", err)
+		}
+		s.DefaultUserID = id
+		log.Printf("Auth disabled — using default user (id=%d)", id)
+	}
+
+	return s, nil
 }
 
 // Close shuts down the connection pool.
